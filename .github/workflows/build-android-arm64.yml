@@ -55,7 +55,7 @@ jobs:
       - name: Prepare bundled libraries
         run: pnpm --filter @readest/readest-app setup-vendors
 
-      - name: Build arm64 debug APK
+      - name: Build arm64 release APK
         working-directory: apps/readest-app
         env:
           NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.2.13676358
@@ -65,16 +65,32 @@ jobs:
           pnpm tauri icon ../../data/icons/readest-book.png
           git checkout .
 
-          pnpm tauri android build --debug --target aarch64
+          # This one-off key makes the release artifact directly installable.
+          # Use a persistent GitHub secret for upgrades without uninstalling.
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/readest-ci.keystore" \
+            -storepass android -keypass android \
+            -alias readest-ci -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Readest self-hosted CI"
+          cat > src-tauri/gen/android/keystore.properties <<EOF
+          keyAlias=readest-ci
+          password=android
+          storeFile=$RUNNER_TEMP/readest-ci.keystore
+          EOF
 
-          apk=$(find src-tauri/gen/android/app/build/outputs/apk -name '*-debug.apk' -print -quit)
+          pnpm tauri android build --target aarch64
+
+          apk=$(find src-tauri/gen/android/app/build/outputs/apk \
+            -type f -name '*-release.apk' ! -name '*-unsigned.apk' -print -quit)
           test -n "$apk"
+          abis=$(unzip -Z1 "$apk" | sed -n 's#^lib/\([^/]*\)/.*#\1#p' | sort -u)
+          test "$abis" = "arm64-v8a"
           mkdir -p artifacts
-          cp "$apk" artifacts/Readest-arm64-v8a-debug.apk
+          cp "$apk" artifacts/Readest-arm64-v8a-release.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Readest-arm64-v8a
-          path: apps/readest-app/artifacts/Readest-arm64-v8a-debug.apk
+          name: Readest-arm64-v8a-release
+          path: apps/readest-app/artifacts/Readest-arm64-v8a-release.apk
           if-no-files-found: error
