@@ -30,12 +30,42 @@ describe('isCloudSyncInPlan', () => {
 });
 
 describe('isCloudSyncAllowed (premium paywall)', () => {
-  test('third-party cloud sync requires a paid plan', () => {
+  test('third-party cloud sync requires an entitlement by default', () => {
     expect(CLOUD_SYNC_REQUIRES_PREMIUM).toBe(true);
     expect(isCloudSyncAllowed('free', false)).toBe(false);
     expect(isCloudSyncAllowed('plus', false)).toBe(true);
     expect(isCloudSyncAllowed('pro', false)).toBe(true);
     expect(isCloudSyncAllowed('purchase', false)).toBe(false);
+  });
+
+  test('the self-built override enables WebDAV for free users without unlocking other features', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SELF_HOSTED_UNLOCK_THIRD_PARTY_SYNC', 'true');
+    vi.resetModules();
+
+    const access = await import('@/utils/access');
+    const cloudSync = await import('@/services/sync/cloudSyncProvider');
+    const settings = {
+      webdav: {
+        enabled: true,
+        serverUrl: 'https://dav.example.com',
+        username: 'alice',
+        password: 'secret',
+        rootPath: '/',
+      },
+    } as unknown as SystemSettings;
+
+    expect(access.CLOUD_SYNC_REQUIRES_PREMIUM).toBe(false);
+    expect(access.isCloudSyncAllowed('free', false)).toBe(true);
+    expect(cloudSync.resolveCloudSyncGate(settings, 'free', false)).toEqual({
+      readest: false,
+      backends: ['webdav'],
+      paused: false,
+    });
+    expect(access.isTTSCacheAllowed('free', false)).toBe(false);
+    expect(access.isNearbyPairingAllowed('free', false)).toBe(false);
+
+    vi.unstubAllEnvs();
+    vi.resetModules();
   });
 });
 

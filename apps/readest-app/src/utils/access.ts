@@ -47,10 +47,8 @@ export const isEmailInPlan = (plan: UserPlan, customizationPurchased: boolean): 
   isCustomizationAllowed(plan, customizationPurchased);
 
 /**
- * Plans that include third-party cloud sync (WebDAV / Google Drive): any paid
- * plan — Plus, Pro, and Lifetime (`purchase`). Free users see an upgrade prompt
- * in Settings and the reader's auto-sync stays off, so syncing to a personal
- * cloud is a premium feature.
+ * Plans that include third-party cloud sync when its paywall is enabled. The
+ * self-built override below bypasses only this plan list.
  */
 export const CLOUD_SYNC_PLANS: readonly UserPlan[] = ['plus', 'pro', 'purchase'];
 
@@ -58,15 +56,20 @@ export const isCloudSyncInPlan = (plan: UserPlan, customizationPurchased: boolea
   isCustomizationAllowed(plan, customizationPurchased);
 
 /**
- * Master switch for the third-party cloud-sync premium paywall. ON: cloud
- * sync (WebDAV / Google Drive / S3) requires a {@link CLOUD_SYNC_PLANS} plan —
- * free users see the provider rows with a Premium badge and an upgrade route
- * instead of the config sub-pages, and a downgraded account's still-selected
- * provider is paused (never a silent fallback to Readest Cloud uploads, #4959).
- * Every gate goes through {@link isCloudSyncAllowed}, so this flag is the
- * whole toggle.
+ * Self-built Tauri binaries can opt out of the third-party cloud-sync paywall
+ * at compile time. The `NEXT_PUBLIC_` prefix is required because this module
+ * runs in the browser/WebView bundle; Next.js replaces the value while
+ * building, so changing it requires a rebuild and never contacts billing.
  */
-export const CLOUD_SYNC_REQUIRES_PREMIUM = true;
+export const SELF_HOSTED_UNLOCK_THIRD_PARTY_SYNC =
+  process.env['NEXT_PUBLIC_SELF_HOSTED_UNLOCK_THIRD_PARTY_SYNC'] === 'true';
+
+/**
+ * Master switch for the third-party cloud-sync premium paywall. ON: cloud
+ * sync (WebDAV / Google Drive / S3 / OneDrive / iCloud) requires an entitled
+ * plan. Every UI and runtime gate goes through {@link isCloudSyncAllowed}.
+ */
+export const CLOUD_SYNC_REQUIRES_PREMIUM = !SELF_HOSTED_UNLOCK_THIRD_PARTY_SYNC;
 
 /**
  * Whether third-party cloud sync is available for a plan. Falls back to the
