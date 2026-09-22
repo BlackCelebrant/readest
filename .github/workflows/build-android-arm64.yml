@@ -65,17 +65,13 @@ jobs:
           pnpm tauri icon ../../data/icons/readest-book.png
           git checkout .
 
-          # This one-off key makes the release artifact directly installable.
-          # Use a persistent GitHub secret for upgrades without uninstalling.
-          keytool -genkeypair -v \
-            -keystore "$RUNNER_TEMP/readest-ci.keystore" \
-            -storepass android -keypass android \
-            -alias readest-ci -keyalg RSA -keysize 2048 -validity 10000 \
-            -dname "CN=Readest self-hosted CI"
+          # Restore persistent Android signing key
+          echo '${{ secrets.ANDROID_KEY_BASE64 }}' | base64 -d > "$RUNNER_TEMP/readest-personal.jks"
+
           cat > src-tauri/gen/android/keystore.properties <<EOF
-          keyAlias=readest-ci
-          password=android
-          storeFile=$RUNNER_TEMP/readest-ci.keystore
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          password=${{ secrets.ANDROID_KEY_PASSWORD }}
+          storeFile=$RUNNER_TEMP/readest-personal.jks
           EOF
 
           pnpm tauri android build --target aarch64
