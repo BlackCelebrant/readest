@@ -2,6 +2,8 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { DocumentLoader, getDirection } from '@/libs/document';
+import { getImportErrorMessage } from '@/services/errors';
+import { BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 
 if (typeof globalThis['CSS'] === 'undefined') {
   (globalThis as Record<string, unknown>)['CSS'] = {
@@ -28,6 +30,21 @@ const loadFixtureBytes = (name: string): Uint8Array => {
 };
 
 describe('DocumentLoader.open', () => {
+  it('reports a ZIP with no book inside as an unsupported format, not a raw parser error', async () => {
+    const writer = new ZipWriter(new BlobWriter('application/zip'));
+    await writer.add('readme.txt', new TextReader('This archive is not a book.'));
+    const file = new File([await writer.close()], 'notes.zip');
+
+    const error = await new DocumentLoader(file).open().then(
+      () => null,
+      (e: Error) => e,
+    );
+    // bookService wraps loader errors before the import toast maps them.
+    expect(getImportErrorMessage(`Failed to open the book file: ${error?.message}`)).toBe(
+      'This book format is not supported',
+    );
+  });
+
   it('opens an EPUB whose first local file header has a non-standard signature byte', async () => {
     // Some EPUB writers in the wild produce a malformed first local file header
     // signature - PK\x03\x02 instead of the spec-mandated PK\x03\x04.
@@ -122,6 +139,24 @@ describe('DocumentLoader format probes for HTML', () => {
       const { book, format } = await new DocumentLoader(file).open();
       expect(format).toBe('HTML');
       expect(book.sections.length).toBe(1);
+    }
+  });
+
+  it('routes .mhtml and .mht web archives to HTML format', async () => {
+    const mhtml = [
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/related; boundary="b"',
+      '',
+      '--b',
+      'Content-Type: text/html',
+      '',
+      html,
+      '--b--',
+    ].join('\r\n');
+    for (const file of [new File([mhtml], 'page.mhtml'), new File([mhtml], 'PAGE.MHT')]) {
+      const { book, format } = await new DocumentLoader(file).open();
+      expect(format).toBe('HTML');
+      expect(book.metadata.title).toBe('T');
     }
   });
 });

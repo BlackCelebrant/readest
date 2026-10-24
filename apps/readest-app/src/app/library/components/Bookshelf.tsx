@@ -26,6 +26,10 @@ import {
   createBookSorter,
   ensureLibraryGroupByType,
   expandBookshelfSelection,
+  getCommonGroupName,
+  findSelectedManualGroup,
+  resolveCurrentShelfBooks,
+  selectAbsOfflineBooks,
   selectDownloadableBooks,
   withReadingStatus,
 } from '../utils/libraryUtils';
@@ -56,6 +60,7 @@ import ModalPortal from '@/components/ModalPortal';
 import BookshelfItem from './BookshelfItem';
 import SelectModeActions from './SelectModeActions';
 import ShareBookDialog from './ShareBookDialog';
+import { createCollectionPack, READEST_PACK_MIME } from '@/services/pack/packService';
 import { useAuth } from '@/context/AuthContext';
 import GroupingModal from './GroupingModal';
 import TaggingModal from './TaggingModal';
@@ -175,6 +180,8 @@ const Bookshelf: React.FC<BookshelfProps> = ({
     settings.libraryGroupBy,
   );
   const groupBy = getActiveBookshelfGroupBy(settings, searchParams);
+  // Inside a series the breadcrumb names it, so each cover only needs its number.
+  const showSeriesIndex = !!groupId && !queryTerm && groupBy === LibraryGroupByType.Series;
   const activeShelf = definitions.find((s) => s.id === activeShelfId);
   const showTimeRemaining = queryTerm
     ? globalSort.by === 'timeRemaining' || globalSort.thenBy === 'timeRemaining'
@@ -282,6 +289,15 @@ const Bookshelf: React.FC<BookshelfProps> = ({
       ),
     [visibleBooks, definitions, uiLanguage, pageDurations, rawMatches, ownership],
   );
+  // Searching book contents inside an opened group stays inside that group,
+  // read from the same shelf the group was opened from.
+  const contentSearchBooks = useMemo(() => {
+    if (!groupId) return visibleBooks;
+    const shelfBooks = unscopedGroup
+      ? visibleBooks
+      : (results.find((r) => r.definition.id === activeShelfId)?.books ?? []);
+    return resolveCurrentShelfBooks(shelfBooks, groupBy, groupId, manualGroupName);
+  }, [visibleBooks, results, groupId, unscopedGroup, activeShelfId, groupBy, manualGroupName]);
   const sections = useMemo<ShelfSection[]>(() => {
     // Search is a flat view of every eligible library book, independent of all shelves.
     if (queryTerm)
@@ -630,16 +646,81 @@ const Bookshelf: React.FC<BookshelfProps> = ({
   };
 
   const sendSelectedNearby = () => {
-    // Group ids in the selection simply don't match any book hash and drop
-    // out; LocalSendManager resolves the files and reports unavailable books.
-    const ids = getSelectedBooks();
+    const ids = expandBookshelfSelection(getSelectedBooks(), sortedBookshelfItems);
     const books = ids
       .map((id) => filteredBooks.find((book) => book.hash === id))
       .filter((book): book is Book => !!book);
     if (books.length === 0) return;
     setShowSelectModeActions(false);
     handleSetSelectMode(false);
-    eventDispatcher.dispatch('localsend-send-books', { books });
+
+    // Several books from one group travel as a .rbooks pack so the receiver
+    // restores the group; a single book is sent as itself.
+    const collectionName = books.length > 1 ? getCommonGroupName(books) : undefined;
+
+    eventDispatcher.dispatch('localsend-send-books', {
+      books,
+      asPack: !!collectionName,
+      collectionName,
+    });
+  };
+
+  const handlePackSelectedBooks = async () => {
+    if (!appService) return;
+    const ids = expandBookshelfSelection(getSelectedBooks(), sortedBookshelfItems);
+    const books = ids
+      .map((id) => filteredBooks.find((book) => book.hash === id))
+      .filter((book): book is Book => !!book);
+    if (books.length === 0) return;
+
+    setShowSelectModeActions(false);
+    handleSetSelectMode(false);
+
+    eventDispatcher.dispatch('toast', {
+      type: 'info',
+      message: _('Creating package for {{count}} book(s)...', { count: books.length }),
+      timeout: 3000,
+    });
+
+    try {
+      const result = await createCollectionPack(appService, books, getCommonGroupName(books));
+      if (!result) {
+        eventDispatcher.dispatch('toast', {
+          type: 'warning',
+          message: _('No local files available to pack'),
+          timeout: 3000,
+        });
+        return;
+      }
+
+      if (result.count < books.length) {
+        eventDispatcher.dispatch('toast', {
+          type: 'warning',
+          message: _('{{count}} book(s) omitted (file not available locally)', {
+            count: books.length - result.count,
+          }),
+          timeout: 4000,
+        });
+      }
+
+      const saved = await appService.saveFile(result.filename, result.data, {
+        mimeType: READEST_PACK_MIME,
+      });
+      if (!saved) return;
+
+      eventDispatcher.dispatch('toast', {
+        type: 'success',
+        message: _('Exported {{filename}}', { filename: result.filename }),
+        timeout: 3000,
+      });
+    } catch (err) {
+      console.error('Failed to create book pack:', err);
+      eventDispatcher.dispatch('toast', {
+        type: 'error',
+        message: _('Failed to export package'),
+        timeout: 3000,
+      });
+    }
   };
 
   const updateBooksStatus = async (status: ReadingStatus | undefined) => {
@@ -777,11 +858,22 @@ const Bookshelf: React.FC<BookshelfProps> = ({
   const downloadableBooks = isSelectMode
     ? selectDownloadableBooks(selectedBooks, sortedBookshelfItems, filteredBooks)
     : [];
+  // Audiobookshelf audiobooks have no cloud copy; Download keeps them on the
+  // device instead (#6256), which needs a native filesystem.
+  const absOfflineBooks =
+    isSelectMode && isTauriAppPlatform()
+      ? selectAbsOfflineBooks(selectedBooks, sortedBookshelfItems, filteredBooks)
+      : [];
 
   const downloadSelectedBooks = async () => {
     const books = downloadableBooks;
-    if (books.length === 0) return;
+    if (books.length === 0 && absOfflineBooks.length === 0) return;
     handleSetSelectMode(false);
+    // The library page owns the premium gate (useAbsOfflineDownload).
+    if (absOfflineBooks.length > 0) {
+      eventDispatcher.dispatch('abs-offline-download', { books: absOfflineBooks });
+    }
+    if (books.length === 0) return;
     // One summary up front rather than a toast per book: the Readest Cloud
     // path returns as soon as each book is queued, but a file backend
     // actually fetches them, and either way the user needs immediate feedback
@@ -865,6 +957,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
         showTimeRemaining={
           shelf.sort.by === 'timeRemaining' || shelf.sort.thenBy === 'timeRemaining'
         }
+        showSeriesIndex={showSeriesIndex}
       />
     ),
     [
@@ -880,6 +973,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
       handleLibraryNavigation,
       handleUpdateReadingStatus,
       transferProgress,
+      showSeriesIndex,
     ],
   );
   const lastShelf = sections.at(-1)?.definition;
@@ -907,11 +1001,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
         </button>
       </div>
     ) : undefined;
-  const importAction = !visibleBooks.length ? (
-    <div className='flex justify-center p-6'>
-      <LibraryEmptyState onImport={handleImportBooks} />
-    </div>
-  ) : !importTile ? (
+  const importAction = !importTile ? (
     <div className='flex justify-center px-4 py-4'>
       <LibraryImportButton onImport={handleImportBooks} />
     </div>
@@ -942,10 +1032,14 @@ const Bookshelf: React.FC<BookshelfProps> = ({
           </button>
         </div>
       )}
-      {contentSearch?.query.trim() && appService ? (
+      {!visibleBooks.length ? (
+        <div className='flex min-h-0 flex-1 items-center-safe justify-center overflow-y-auto p-6'>
+          <LibraryEmptyState onImport={handleImportBooks} />
+        </div>
+      ) : contentSearch?.query.trim() && appService ? (
         <LibrarySearchResults
           appService={appService}
-          books={visibleBooks}
+          books={contentSearchBooks}
           query={contentSearch.query.trim()}
           config={contentSearch.config}
           onSelectResult={openSearchResult}
@@ -958,7 +1052,9 @@ const Bookshelf: React.FC<BookshelfProps> = ({
         // WebKit when a search was cleared.
         <div className='min-h-0 flex-1'>
           <BookshelfStream
+            scrollKey={searchParams?.toString() ?? ''}
             pageNavigation={!!settings.globalViewSettings?.isEink}
+            hidePageButtons={settings.hideBookshelfPageButtons}
             navigationBottomInset={
               selectModeActionsHeight ||
               (appService?.hasSafeAreaInset ? (safeAreaInsets?.bottom || 0) * 0.33 : 0)
@@ -998,7 +1094,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
           }
           sendNearbyEnabled={isTauriAppPlatform() && isLocalSendEnabled()}
           onSendNearby={sendSelectedNearby}
-          canDownload={downloadableBooks.length > 0}
+          canDownload={downloadableBooks.length + absOfflineBooks.length > 0}
           onOpen={openSelectedBooks}
           onGroup={groupSelectedBooks}
           onTag={tagSelectedBooks}
@@ -1006,6 +1102,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
           onStatus={showStatusSelection}
           onDownload={downloadSelectedBooks}
           onSend={sendSelectedBook}
+          onPack={handlePackSelectedBooks}
           onDelete={deleteSelectedBooks}
           onCancel={() => handleSetSelectMode(false)}
         />
@@ -1016,6 +1113,7 @@ const Bookshelf: React.FC<BookshelfProps> = ({
             libraryBooks={libraryBooks}
             selectedBooks={selectedBooks}
             parentGroupName={getGroupName(groupId) || ''}
+            renameGroupName={findSelectedManualGroup(selectedBooks, sortedBookshelfItems)?.name}
             onCancel={() => {
               setShowGroupingModal(false);
               setShowSelectModeActions(true);

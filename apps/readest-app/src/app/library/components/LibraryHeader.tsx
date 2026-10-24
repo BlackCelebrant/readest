@@ -28,6 +28,7 @@ interface LibraryHeaderProps {
   isSelectAll: boolean;
   onPullLibrary: () => void;
   onImportBooksFromFiles: () => void;
+  onImportPastedText?: () => void;
   onImportBooksFromDirectory?: () => void;
   onImportFromWebBrowser?: () => void;
   onImportBookFromNovelUrl?: () => void;
@@ -49,6 +50,7 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
   isSelectAll,
   onPullLibrary,
   onImportBooksFromFiles,
+  onImportPastedText,
   onImportBooksFromDirectory,
   onImportFromWebBrowser,
   onImportBookFromNovelUrl,
@@ -72,7 +74,7 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
   const headerRef = useRef<HTMLDivElement>(null);
   const { isTrafficLightVisible } = useTrafficLight(headerRef);
   const iconSize18 = useResponsiveSize(18);
-  const { safeAreaInsets: insets } = useThemeStore();
+  const { safeAreaInsets: insets, isIPhoneDuo } = useThemeStore();
 
   useShortcuts({
     onToggleSelectMode,
@@ -101,6 +103,12 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
         marginTop: appService?.hasSafeAreaInset
           ? `max(${insets.top}px, ${systemUIVisible ? statusBarHeight : 0}px)`
           : '0px',
+        // Keep the trailing buttons clear of iPhone Duo's side status strip /
+        // camera cutout (#6307); bases match pl-0 / pr-4. Only with a side
+        // inset, so responsive sm:pl-2 / sm:pr-6 keep applying otherwise.
+        ...(isIPhoneDuo && (insets.left || insets.right)
+          ? { paddingLeft: `${insets.left}px`, paddingRight: `${insets.right + 16}px` }
+          : {}),
       }}
     >
       <div className='flex w-full items-center justify-between space-x-6 sm:space-x-12'>
@@ -144,7 +152,7 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
               onChange={handleSearchChange}
               spellCheck='false'
               className={clsx(
-                'search-input input h-9 w-full rounded-full pe-[30%] ps-10 sm:h-7',
+                'window-drag-input search-input input h-9 w-full rounded-full pe-[30%] ps-10 sm:h-7',
                 'bg-base-300/45 border-0',
                 'font-sans text-sm font-light',
                 'placeholder:text-base-content/50 truncate',
@@ -207,6 +215,7 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
                 >
                   <ImportMenu
                     onImportBooksFromFiles={onImportBooksFromFiles}
+                    onImportPastedText={onImportPastedText}
                     onImportBooksFromDirectory={onImportBooksFromDirectory}
                     onImportFromWebBrowser={onImportFromWebBrowser}
                     onImportBookFromNovelUrl={onImportBookFromNovelUrl}
@@ -248,6 +257,15 @@ const LibraryHeader: React.FC<LibraryHeaderProps> = ({
                 {isSelectAll ? _('Deselect') : _('Select All')}
               </span>
             </button>
+            {/* Mounted without buttons so the header still drags the window (#6917). */}
+            {appService?.hasWindowBar && (
+              <WindowButtons
+                headerRef={headerRef}
+                showMinimize={false}
+                showMaximize={false}
+                showClose={false}
+              />
+            )}
           </div>
         ) : (
           <div className='flex h-full items-center gap-x-2 sm:gap-x-4'>
